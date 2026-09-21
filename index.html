@@ -3,71 +3,110 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="robots" content="noindex" />
+    <meta name="robots" content="noindex, nofollow" />
     <meta name="referrer" content="no-referrer" />
+    <meta name="web-annotator" content="reader" /><!-- tells the extension to stay out of this page -->
     <title>Shared notes</title>
     <!--
-      Standalone reader for Web Annotator "view links". Host this one file
-      anywhere static. The notes are in the URL fragment (#v1.…), which browsers
-      never send to a server: this page decodes them locally and nothing is
-      stored or logged. No dependencies, no network requests.
+      Standalone reader for Web Annotator share links. One static file, no dependencies.
+
+        …/?g=<gist id>   LIVE link. The sharer's extension keeps a secret GitHub gist
+                         up to date (notes.json + doc.html, a cleaned copy of the
+                         document). This page shows the document with the highlights in
+                         place and the comments beside them, and re-checks for changes.
+        …/#v1.<data>     FROZEN link. The notes are packed into the URL fragment itself
+                         (never sent to any server); shown as a list of quotes + comments.
+
+      Everything fetched or decoded here is untrusted: the document is rebuilt through a
+      tag allowlist, and all text is inserted with textContent — never innerHTML.
     -->
     <style>
-      :root { --bg:#f6f7f9; --card:#fff; --fg:#1a1a1a; --sub:#555; --line:#e4e6ea; --accent:#2d7ff9;
+      :root { --bg:#f6f7f9; --card:#fff; --fg:#1a1a1a; --sub:#555; --line:#e4e6ea; --accent:#2d7ff9; --paper:#fff;
         --yellow:#ffe066; --green:#a0e8a0; --blue:#9ad0ff; --pink:#ffb3d1; --orange:#ffc078; }
       @media (prefers-color-scheme: dark) {
-        :root { --bg:#17181a; --card:#222427; --fg:#ffffff; --sub:#f0f0f0; --line:#34373c; }
+        :root { --bg:#17181a; --card:#222427; --fg:#ffffff; --sub:#f0f0f0; --line:#34373c; --paper:#1e2023;
+          --yellow:#7a6400; --green:#1f6b2c; --blue:#1d5a8c; --pink:#8c2f57; --orange:#8c4f12; }
       }
       * { box-sizing: border-box; }
-      body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-      .wrap { max-width: 680px; margin: 0 auto; padding: 36px 18px 80px; }
+      body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+      a { color: var(--accent); }
+      .top { max-width: 1080px; margin: 0 auto; padding: 32px 20px 8px; }
       .by { color: var(--accent); font-weight: 700; font-size: 14px; }
-      h1 { font-size: 24px; line-height: 1.25; margin: 4px 0 6px; }
-      h1 a { color: inherit; text-decoration: none; } h1 a:hover { text-decoration: underline; }
-      .meta { color: var(--sub); font-size: 13px; margin-bottom: 18px; word-break: break-all; }
-      .open { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600;
-        font-size:14px; padding:9px 16px; border-radius:9px; }
-      .hint { color: var(--sub); font-size: 12.5px; margin: 8px 0 26px; }
-      .note-card { background:var(--card); border:1px solid var(--line); border-left:5px solid var(--yellow);
-        border-radius:10px; padding:14px 16px; margin-bottom:12px; }
-      .note-card.green{border-left-color:var(--green)} .note-card.blue{border-left-color:var(--blue)}
-      .note-card.pink{border-left-color:var(--pink)} .note-card.orange{border-left-color:var(--orange)}
-      .note-card.plain{border-left-color:var(--accent)}
+      h1.title { font-size: 26px; line-height: 1.25; margin: 4px 0 6px; }
+      h1.title a { color: inherit; text-decoration: none; } h1.title a:hover { text-decoration: underline; }
+      .meta { color: var(--sub); font-size: 13px; margin-bottom: 14px; word-break: break-word; }
+      .open { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600; font-size:14px; padding:8px 14px; border-radius:9px; }
+      .hint { color: var(--sub); font-size: 12.5px; margin: 8px 0 0; }
+
+      /* ---- document mode ---- */
+      #docwrap { position: relative; max-width: 1080px; margin: 18px auto 0; padding: 0 20px; }
+      #doc { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 34px 40px;
+        font: 18px/1.7 Georgia, "Times New Roman", serif; overflow-wrap: anywhere; }
+      .wide #doc { margin-right: 320px; }
+      #doc img { max-width: 100%; height: auto; border-radius: 6px; }
+      #doc h1, #doc h2, #doc h3, #doc h4 { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.3; }
+      #doc h6 { font: 600 11px/1 -apple-system, sans-serif; letter-spacing: .06em; text-transform: uppercase; color: var(--sub); margin: 28px 0 8px; }
+      #doc section[data-page] { border-top: 1px dashed var(--line); margin-top: 18px; }
+      #doc section[data-page]:first-child { border-top: 0; margin-top: 0; }
+      #doc pre { overflow-x: auto; font-size: 14px; background: var(--bg); padding: 12px; border-radius: 8px; }
+      #doc blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 16px; color: var(--sub); }
+      #doc table { border-collapse: collapse; font-size: 15px; } #doc td, #doc th { border: 1px solid var(--line); padding: 4px 8px; }
+      mark.hl { background: var(--yellow); color: inherit; border-radius: 2px; padding: 0 1px; cursor: pointer; }
+      mark.hl.green{background:var(--green)} mark.hl.blue{background:var(--blue)} mark.hl.pink{background:var(--pink)} mark.hl.orange{background:var(--orange)}
+      mark.hl.flash, .ncard.flash { outline: 3px solid var(--accent); outline-offset: 1px; }
+      #gutter { position: absolute; top: 0; right: 20px; width: 300px; }
+      .wide .ncard { position: absolute; left: 0; right: 0; }
+      .ncard { background: var(--card); border: 1px solid var(--line); border-left: 5px solid var(--yellow); border-radius: 10px;
+        padding: 10px 12px; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+      .ncard.green{border-left-color:var(--green)} .ncard.blue{border-left-color:var(--blue)} .ncard.pink{border-left-color:var(--pink)}
+      .ncard.orange{border-left-color:var(--orange)} .ncard.plain{border-left-color:var(--accent)}
+      .narrow .ncard { margin: 10px 0 18px; }
+      .who { font-weight: 700; font-size: 12px; color: var(--accent); margin-bottom: 3px; }
+      .ncard .label { font-style: italic; color: var(--sub); font-size: 12.5px; margin-bottom: 4px; }
+      .comment { white-space: pre-wrap; }
+      .reply { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); white-space: pre-wrap; }
+      .reply > b { color: var(--accent); }
+      #loose { max-width: 1080px; margin: 22px auto 0; padding: 0 20px; }
+      #loose h2 { font-size: 14px; color: var(--sub); font-weight: 600; }
+
+      /* ---- list mode (frozen links, or a live link with no document copy) ---- */
+      #list { max-width: 680px; margin: 22px auto 0; padding: 0 20px; }
+      .note-card { background:var(--card); border:1px solid var(--line); border-left:5px solid var(--yellow); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+      .note-card.green{border-left-color:var(--green)} .note-card.blue{border-left-color:var(--blue)} .note-card.pink{border-left-color:var(--pink)}
+      .note-card.orange{border-left-color:var(--orange)} .note-card.plain{border-left-color:var(--accent)}
       .quote { font-family: Georgia, "Times New Roman", serif; font-style: italic; }
       .pg { font: 600 11px/1 -apple-system, sans-serif; color: var(--sub); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
-      .comment { margin-top: 8px; white-space: pre-wrap; }
-      .reply { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); white-space: pre-wrap; font-size: 15px; }
-      .reply > b { color: var(--accent); }
       #error { text-align:center; padding: 70px 20px; }
-      footer { margin-top: 30px; color: var(--sub); font-size: 12.5px; text-align: center; }
+      footer { margin: 34px auto 60px; color: var(--sub); font-size: 12.5px; text-align: center; padding: 0 20px; }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div id="content" hidden>
-        <div class="by" id="by"></div>
-        <h1><a id="title" target="_blank" rel="noreferrer noopener"></a></h1>
-        <div class="meta" id="meta"></div>
-        <a class="open" id="open" target="_blank" rel="noreferrer noopener" hidden>Open the page with these notes →</a>
-        <div class="hint" id="hint" hidden>
-          With the Web Annotator extension, the highlights appear right in the text. Without it, you'll just see the page.
-        </div>
-        <div id="list"></div>
-      </div>
-      <div id="error" hidden></div>
-      <footer>These notes live only in this link — they aren't stored on any server.</footer>
+    <div class="top" id="top" hidden>
+      <div class="by" id="by"></div>
+      <h1 class="title"><a id="title" target="_blank" rel="noreferrer noopener"></a></h1>
+      <div class="meta" id="meta"></div>
+      <a class="open" id="open" target="_blank" rel="noreferrer noopener" hidden>Open the original with these notes →</a>
+      <div class="hint" id="hint" hidden>With the Web Annotator extension, the highlights appear on the original page itself.</div>
     </div>
+    <div id="docwrap" hidden><article id="doc"></article><aside id="gutter"></aside></div>
+    <div id="loose" hidden><h2>Notes on passages that aren't in this copy of the document</h2><div id="looselist"></div></div>
+    <div id="list"></div>
+    <div id="error" hidden></div>
+    <footer id="foot"></footer>
+
     <script>
       "use strict";
+      const GIST_API = "https://api.github.com/gists/";
       const el = (id) => document.getElementById(id);
       const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
       const COLORS = new Set(["yellow", "green", "blue", "pink", "orange"]);
 
-      async function decode(data) {
+      // ---------------------------------------------------------------- loading
+      async function inflate(data) {
         if (!data.startsWith("v1.")) throw new Error("This link is from a newer version.");
         const bin = atob(data.slice(3).replace(/-/g, "+").replace(/_/g, "/"));
-        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+        const reader = new Blob([Uint8Array.from(bin, (c) => c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
         const chunks = [];
         let size = 0;
         for (;;) {
@@ -78,8 +117,32 @@
         }
         return JSON.parse(await new Blob(chunks).text());
       }
+      async function deflate(obj) {
+        const packed = new Blob([JSON.stringify(obj)]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+        const bytes = new Uint8Array(await new Response(packed).arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        return "v1." + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      }
+      async function gistFile(f, max) {
+        if (!f) return null;
+        let text = f.content;
+        if (f.truncated && /^https:\/\/gist\.githubusercontent\.com\//.test(f.raw_url || "")) text = await (await fetch(f.raw_url)).text();
+        if (typeof text !== "string" || text.length > max) throw new Error("These shared notes are too large to show.");
+        return text;
+      }
+      async function loadGist(id) {
+        const res = await fetch(GIST_API + id, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
+        if (res.status === 404) throw new Error("These notes were taken down by the person who shared them (or the link is incomplete).");
+        if (res.status === 403 || res.status === 429) throw new Error("GitHub is limiting requests from this network right now — try again in a few minutes.");
+        if (!res.ok) throw new Error(`Couldn't load these notes (GitHub said ${res.status}).`);
+        const g = await res.json();
+        const notes = await gistFile(g.files && g.files["notes.json"], 2000000);
+        if (!notes) throw new Error("This link doesn't point at shared notes.");
+        return { obj: JSON.parse(notes), doc: await gistFile(g.files["doc.html"], 3000000), stamp: g.updated_at };
+      }
 
-      // **bold**, *italic*, ***both*** — built as elements + textContent, never innerHTML.
+      // -------------------------------------------------------------- rich text
       const RICH = /\*\*\*(?!\s)([^\n]+?)(?<!\s)\*\*\*|\*\*(?!\s)([^\n]+?)(?<!\s)\*\*|(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])|(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)/g;
       function rich(parent, text, depth = 0) {
         let last = 0;
@@ -95,70 +158,256 @@
         parent.append(text.slice(last));
       }
 
-      function render(obj, data) {
-        if (!obj || obj.v !== 1 || !Array.isArray(obj.a)) throw new Error("This link is damaged.");
+      // ------------------------------------------ document: sanitize, then draw
+      const KEEP = new Set("P H1 H2 H3 H4 H5 H6 UL OL LI BLOCKQUOTE PRE CODE EM STRONG B I U S SUB SUP SMALL CITE Q ABBR TIME A IMG FIGURE FIGCAPTION TABLE THEAD TBODY TFOOT TR TD TH CAPTION HR BR SPAN DIV SECTION ARTICLE DL DT DD".split(" "));
+      const DROP = new Set("SCRIPT STYLE NOSCRIPT IFRAME SVG CANVAS VIDEO AUDIO OBJECT EMBED FORM INPUT BUTTON SELECT TEXTAREA DIALOG TEMPLATE LINK META BASE MATH".split(" "));
+      const web = (u) => (/^https?:\/\//i.test(u || "") ? u : null);
+      function cleanInto(target, html) {
+        const src = new DOMParser().parseFromString(html, "text/html"); // inert: nothing runs or loads
+        const copy = (from, to, depth) => {
+          if (depth > 60) return;
+          for (const n of from.childNodes) {
+            if (n.nodeType === 3) { to.append(n.nodeValue); continue; }
+            if (n.nodeType !== 1) continue;
+            const tag = n.tagName.toUpperCase();
+            if (DROP.has(tag)) continue;
+            if (!KEEP.has(tag)) { copy(n, to, depth + 1); continue; }
+            const e = document.createElement(tag.toLowerCase()); // a fresh element: no attributes survive by default
+            if (tag === "A") {
+              const href = web(n.getAttribute("href"));
+              if (href) { e.href = href; e.target = "_blank"; e.rel = "noreferrer noopener"; }
+            } else if (tag === "IMG") {
+              const s = web(n.getAttribute("src"));
+              if (!s) continue;
+              e.src = s; e.loading = "lazy"; e.referrerPolicy = "no-referrer"; e.alt = str(n.getAttribute("alt"), 300);
+            } else if (tag === "TD" || tag === "TH") {
+              for (const a of ["colspan", "rowspan"]) if (/^\d{1,2}$/.test(n.getAttribute(a) || "")) e.setAttribute(a, n.getAttribute(a));
+            } else if (tag === "SECTION" && /^\d{1,4}$/.test(n.getAttribute("data-page") || "")) {
+              e.dataset.page = n.getAttribute("data-page");
+            }
+            copy(n, e, depth + 1);
+            to.append(e);
+          }
+        };
+        copy(src.body, target, 0);
+      }
+
+      // Text-quote anchoring, as forgiving as the extension's: exact + context first,
+      // then with all whitespace/invisible characters squeezed out, then head+tail.
+      function textIndex(root) {
+        const map = []; let text = "";
+        const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let n; (n = w.nextNode()); ) { map.push({ n, s: text.length, e: text.length + n.nodeValue.length }); text += n.nodeValue; }
+        return { text, map };
+      }
+      const skip = (c) => c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0xad || c === 0xfeff || (c >= 0x200b && c <= 0x200d) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x3000;
+      function squeeze(s) { const idx = []; let out = ""; for (let k = 0; k < s.length; k++) { if (skip(s.charCodeAt(k))) continue; out += s[k]; idx.push(k); } return { out, idx }; }
+      const lcp = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return i; };
+      const lcs = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++; return i; };
+      function locate(hay, q) {
+        const H = squeeze(hay), N = squeeze(q.x).out;
+        if (N.length < 3) return null;
+        const pre = squeeze(q.p || "").out, suf = squeeze(q.s || "").out;
+        const span = (from, len) => [H.idx[from], H.idx[from + len - 1] + 1];
+        let best = -1, score = -1;
+        for (let p = H.out.indexOf(N); p !== -1; p = H.out.indexOf(N, p + 1)) {
+          const sc = lcs(H.out.slice(Math.max(0, p - pre.length), p), pre) + lcp(H.out.slice(p + N.length, p + N.length + suf.length), suf);
+          if (sc > score) { score = sc; best = p; }
+        }
+        if (best !== -1) return span(best, N.length);
+        if (N.length < 60) return null;
+        const head = N.slice(0, 28), tail = N.slice(-28);
+        for (let p = H.out.indexOf(head); p !== -1; p = H.out.indexOf(head, p + 1)) {
+          const t = H.out.indexOf(tail, p + head.length);
+          if (t === -1) break;
+          const len = t + tail.length - p;
+          if (len >= N.length * 0.6 && len <= N.length * 1.5 + 40) return span(p, len);
+        }
+        return null;
+      }
+      function wrap(root, start, end, cls, i) {
+        const made = [];
+        for (const m of textIndex(root).map) {
+          if (m.e <= start || m.s >= end || !m.n.nodeValue.trim()) continue;
+          const r = document.createRange();
+          r.setStart(m.n, Math.max(0, start - m.s));
+          r.setEnd(m.n, Math.min(m.n.nodeValue.length, end - m.s));
+          const mark = document.createElement("mark");
+          mark.className = `hl ${cls}`;
+          mark.dataset.i = i;
+          try { r.surroundContents(mark); made.push(mark); } catch { /* crossed an element edge */ }
+        }
+        return made;
+      }
+
+      // ---------------------------------------------------------------- render
+      function noteBody(card, w, by, all, i) {
+        if (str(w.n, 8000)) { const c = document.createElement("div"); c.className = "comment"; rich(c, str(w.n, 8000)); card.append(c); }
+        for (const r of all) {
+          if (!r || r.k !== "r" || r.r !== i || !str(r.n, 8000)) continue;
+          const line = document.createElement("div"); line.className = "reply";
+          const who = document.createElement("b"); who.textContent = by;
+          const what = document.createElement("span"); rich(what, ` ${str(r.n, 8000)}`);
+          line.append(who, what); card.append(line);
+        }
+      }
+      const hasTalk = (w, all, i) => !!str(w.n, 8000) || all.some((r) => r && r.k === "r" && r.r === i && str(r.n, 8000));
+      const flash = (node) => { node.classList.add("flash"); setTimeout(() => node.classList.remove("flash"), 1400); };
+
+      let cards = []; // [{ card, mark }]
+      function layout() {
+        const wideEnough = innerWidth >= 1040 && cards.length > 0;
+        el("docwrap").className = wideEnough ? "wide" : "narrow";
+        let bottom = -Infinity;
+        const top0 = el("docwrap").getBoundingClientRect().top;
+        for (const { card, mark } of cards.slice().sort((a, b) => a.mark.getBoundingClientRect().top - b.mark.getBoundingClientRect().top)) {
+          if (wideEnough) {
+            if (card.parentNode !== el("gutter")) el("gutter").append(card);
+            const y = Math.max(mark.getBoundingClientRect().top - top0, bottom + 10);
+            card.style.top = `${y}px`;
+            bottom = y + card.offsetHeight;
+          } else {
+            card.style.top = "";
+            let block = mark.parentElement;
+            while (block.parentElement && block.parentElement !== el("doc") && getComputedStyle(block).display.startsWith("inline")) block = block.parentElement;
+            if (card.previousSibling !== block) block.after(card);
+          }
+        }
+        el("gutter").style.height = wideEnough ? `${Math.max(bottom, 0) + 20}px` : "0";
+      }
+
+      function header(obj, data) {
         const by = str(obj.by, 60) || "Someone";
         const url = str(obj.u, 2000);
-        const web = /^https?:\/\//i.test(url);
+        const isWeb = /^https?:\/\//i.test(url);
         const title = str(obj.t, 300) || url;
         document.title = `${by}'s notes — ${title}`;
         el("by").textContent = `${by}'s notes on`;
         el("title").textContent = title;
-        if (web) el("title").href = url; // only ever a plain web address
+        if (isWeb) el("title").href = url; else el("title").removeAttribute("href");
         const when = obj.at ? new Date(obj.at) : null;
-        el("meta").textContent = [web ? new URL(url).host : "a PDF", when && !isNaN(when) ? when.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : ""].filter(Boolean).join(" · ");
-        if (web) {
-          el("open").href = `${url}#wa-view=${data}`;
-          el("open").hidden = false;
-          el("hint").hidden = false;
-        }
+        el("meta").textContent = [isWeb ? new URL(url).host : "a PDF", when && !isNaN(when) ? `updated ${when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}` : ""].filter(Boolean).join(" · ");
+        el("open").hidden = el("hint").hidden = !isWeb;
+        if (isWeb) el("open").href = `${url}#wa-view=${data}`;
+        el("top").hidden = false;
+        return by;
+      }
 
+      function renderList(obj, data) {
+        const by = header(obj, data);
+        el("docwrap").hidden = el("loose").hidden = true;
+        el("list").replaceChildren();
         const items = obj.a.slice(0, 500);
         items.forEach((w, i) => {
           if (!w || typeof w !== "object" || w.k === "r") return;
           const card = document.createElement("div");
           card.className = `note-card ${w.k === "h" ? (COLORS.has(w.c) ? w.c : "yellow") : "plain"}`;
-          if (Number.isInteger(w.g) && w.g > 0) {
-            const pg = document.createElement("div");
-            pg.className = "pg";
-            pg.textContent = `Page ${w.g}`;
-            card.append(pg);
-          }
-          const quote = document.createElement("div");
-          quote.className = "quote";
+          if (Number.isInteger(w.g) && w.g > 0) { const pg = document.createElement("div"); pg.className = "pg"; pg.textContent = `Page ${w.g}`; card.append(pg); }
+          const quote = document.createElement("div"); quote.className = "quote";
           quote.textContent = w.k === "h" ? `“${str(w.x, 8000)}”` : w.k === "p" ? "★ Saved this page" : "✎ Drew on the page";
           card.append(quote);
-          if (str(w.n, 8000)) {
-            const c = document.createElement("div");
-            c.className = "comment";
-            rich(c, str(w.n, 8000));
-            card.append(c);
-          }
-          for (const r of items) {
-            if (!r || r.k !== "r" || r.r !== i || !str(r.n, 8000)) continue;
-            const line = document.createElement("div");
-            line.className = "reply";
-            const who = document.createElement("b");
-            who.textContent = by;
-            const what = document.createElement("span");
-            rich(what, ` ${str(r.n, 8000)}`);
-            line.append(who, what);
-            card.append(line);
-          }
+          noteBody(card, w, by, items, i);
           el("list").append(card);
         });
-        el("content").hidden = false;
+      }
+
+      function renderDoc(obj, doc, data) {
+        const by = header(obj, data);
+        el("list").replaceChildren();
+        el("doc").replaceChildren();
+        el("gutter").replaceChildren();
+        el("looselist").replaceChildren();
+        cleanInto(el("doc"), doc);
+        let settle;
+        el("doc").querySelectorAll("img").forEach((img) =>
+          img.addEventListener("load", () => { clearTimeout(settle); settle = setTimeout(() => cards.length && layout(), 120); })
+        );
+        cards = [];
+        const items = obj.a.slice(0, 500);
+        items.forEach((w, i) => {
+          if (!w || typeof w !== "object" || w.k === "r") return;
+          const color = w.k === "h" ? (COLORS.has(w.c) ? w.c : "yellow") : "plain";
+          let marks = [];
+          if (w.k === "h" && str(w.x, 8000).trim()) {
+            const hit = locate(textIndex(el("doc")).text, { x: str(w.x, 8000), p: str(w.p, 64), s: str(w.s, 64) });
+            if (hit) marks = wrap(el("doc"), hit[0], hit[1], color, i);
+          }
+          const talk = hasTalk(w, items, i);
+          if (marks.length && !talk) return; // a bare highlight: the yellow IS the note
+          const card = document.createElement("div");
+          card.className = `ncard ${color}`;
+          const who = document.createElement("div"); who.className = "who"; who.textContent = by; card.append(who);
+          if (!marks.length) {
+            const label = document.createElement("div"); label.className = "label";
+            label.textContent = w.k === "h" ? `“${str(w.x, 300)}”` : w.k === "p" ? "★ About this page" : "✎ Drew on the page";
+            card.append(label);
+          }
+          noteBody(card, w, by, items, i);
+          if (marks.length) {
+            cards.push({ card, mark: marks[0] });
+            card.addEventListener("click", () => { marks[0].scrollIntoView({ behavior: "smooth", block: "center" }); marks.forEach(flash); });
+            marks.forEach((m) => m.addEventListener("click", () => { card.scrollIntoView({ behavior: "smooth", block: "nearest" }); flash(card); }));
+          } else if (w.k === "p") {
+            card.style.cursor = "default"; card.classList.add("pagecard");
+            el("doc").before(card); card.style.position = "static"; card.style.margin = "0 0 14px";
+          } else if (talk || w.k === "h") {
+            card.style.cursor = "default"; card.style.position = "static"; card.style.margin = "0 0 10px";
+            el("looselist").append(card);
+          }
+        });
+        document.querySelectorAll("#docwrap > .pagecard").forEach((c, k) => k > 0 && c.remove());
+        el("loose").hidden = !el("looselist").childNodes.length;
+        el("docwrap").hidden = false;
+        layout();
+      }
+
+      // ------------------------------------------------------------------ boot
+      let last = null; // { stamp } of what's on screen, for live links
+      async function showGist(id, quiet) {
+        const got = await loadGist(id);
+        if (last && last.stamp === got.stamp) return;
+        const y = scrollY;
+        last = { stamp: got.stamp };
+        const o = got.obj;
+        if (!o || o.v !== 1 || !Array.isArray(o.a)) throw new Error("This link is damaged.");
+        const data = await deflate({ ...o, doc: undefined });
+        document.querySelectorAll("#docwrap > .pagecard").forEach((c) => c.remove());
+        if (got.doc) renderDoc(o, got.doc, data); else renderList(o, data);
+        if (quiet) scrollTo(0, y);
       }
 
       (async () => {
+        const gist = new URLSearchParams(location.search).get("g");
         const data = (location.hash.match(/(?:^#|[#&]wa-view=)(v1\.[\w-]+)/) || [])[1];
         try {
-          if (!data) throw new Error("This page shows notes shared with a Web Annotator view link — and this link doesn't carry any.");
-          render(await decode(data), data);
+          if (gist && /^[0-9a-f]{16,64}$/i.test(gist)) {
+            await showGist(gist, false);
+            el("foot").textContent = "Live link — this page checks for new notes by itself. The notes and this copy of the document are kept in a private, unlisted GitHub gist by the person who shared them.";
+            // Live: look again every 2 minutes while visible, and whenever the tab regains focus.
+            let lastCheck = Date.now();
+            const again = () => {
+              if (document.hidden || Date.now() - lastCheck < 30000) return;
+              lastCheck = Date.now();
+              showGist(gist, true).catch(() => {});
+            };
+            setInterval(again, 120000);
+            addEventListener("focus", again);
+            document.addEventListener("visibilitychange", again);
+            window.__refresh = () => showGist(gist, true); // for tests / the impatient
+          } else if (data) {
+            const obj = await inflate(data);
+            if (!obj || obj.v !== 1 || !Array.isArray(obj.a)) throw new Error("This link is damaged.");
+            renderList(obj, data);
+            el("foot").textContent = "These notes live only in this link — they aren't stored on any server.";
+          } else {
+            throw new Error("This page shows notes shared with Web Annotator — and this link doesn't carry any.");
+          }
         } catch (e) {
           el("error").textContent = e.message || "Couldn't read this link.";
           el("error").hidden = false;
         }
+        let t; addEventListener("resize", () => { clearTimeout(t); t = setTimeout(() => cards.length && layout(), 150); });
+        addEventListener("load", () => cards.length && layout()); // images settle → re-seat cards
       })();
     </script>
   </body>
