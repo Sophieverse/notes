@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Shared notes</title>
+    <!--
+      Standalone reader for Web Annotator "view links". Host this one file
+      anywhere static. The notes are in the URL fragment (#v1.…), which browsers
+      never send to a server: this page decodes them locally and nothing is
+      stored or logged. No dependencies, no network requests.
+    -->
+    <style>
+      :root { --bg:#f6f7f9; --card:#fff; --fg:#1a1a1a; --sub:#555; --line:#e4e6ea; --accent:#2d7ff9;
+        --yellow:#ffe066; --green:#a0e8a0; --blue:#9ad0ff; --pink:#ffb3d1; --orange:#ffc078; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg:#17181a; --card:#222427; --fg:#ffffff; --sub:#f0f0f0; --line:#34373c; }
+      }
+      * { box-sizing: border-box; }
+      body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+      .wrap { max-width: 680px; margin: 0 auto; padding: 36px 18px 80px; }
+      .by { color: var(--accent); font-weight: 700; font-size: 14px; }
+      h1 { font-size: 24px; line-height: 1.25; margin: 4px 0 6px; }
+      h1 a { color: inherit; text-decoration: none; } h1 a:hover { text-decoration: underline; }
+      .meta { color: var(--sub); font-size: 13px; margin-bottom: 18px; word-break: break-all; }
+      .open { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600;
+        font-size:14px; padding:9px 16px; border-radius:9px; }
+      .hint { color: var(--sub); font-size: 12.5px; margin: 8px 0 26px; }
+      .note-card { background:var(--card); border:1px solid var(--line); border-left:5px solid var(--yellow);
+        border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+      .note-card.green{border-left-color:var(--green)} .note-card.blue{border-left-color:var(--blue)}
+      .note-card.pink{border-left-color:var(--pink)} .note-card.orange{border-left-color:var(--orange)}
+      .note-card.plain{border-left-color:var(--accent)}
+      .quote { font-family: Georgia, "Times New Roman", serif; font-style: italic; }
+      .pg { font: 600 11px/1 -apple-system, sans-serif; color: var(--sub); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+      .comment { margin-top: 8px; white-space: pre-wrap; }
+      .reply { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); white-space: pre-wrap; font-size: 15px; }
+      .reply > b { color: var(--accent); }
+      #error { text-align:center; padding: 70px 20px; }
+      footer { margin-top: 30px; color: var(--sub); font-size: 12.5px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div id="content" hidden>
+        <div class="by" id="by"></div>
+        <h1><a id="title" target="_blank" rel="noreferrer noopener"></a></h1>
+        <div class="meta" id="meta"></div>
+        <a class="open" id="open" target="_blank" rel="noreferrer noopener" hidden>Open the page with these notes →</a>
+        <div class="hint" id="hint" hidden>
+          With the Web Annotator extension, the highlights appear right in the text. Without it, you'll just see the page.
+        </div>
+        <div id="list"></div>
+      </div>
+      <div id="error" hidden></div>
+      <footer>These notes live only in this link — they aren't stored on any server.</footer>
+    </div>
+    <script>
+      "use strict";
+      const el = (id) => document.getElementById(id);
+      const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+      const COLORS = new Set(["yellow", "green", "blue", "pink", "orange"]);
+
+      async function decode(data) {
+        if (!data.startsWith("v1.")) throw new Error("This link is from a newer version.");
+        const bin = atob(data.slice(3).replace(/-/g, "+").replace(/_/g, "/"));
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+        const chunks = [];
+        let size = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if ((size += value.length) > 1000000) throw new Error("This link is too large.");
+          chunks.push(value);
+        }
+        return JSON.parse(await new Blob(chunks).text());
+      }
+
+      // **bold**, *italic*, ***both*** — built as elements + textContent, never innerHTML.
+      const RICH = /\*\*\*(?!\s)([^\n]+?)(?<!\s)\*\*\*|\*\*(?!\s)([^\n]+?)(?<!\s)\*\*|(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])|(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)/g;
+      function rich(parent, text, depth = 0) {
+        let last = 0;
+        for (const m of text.matchAll(RICH)) {
+          parent.append(text.slice(last, m.index));
+          const e = document.createElement(m[1] != null || m[2] != null ? "b" : "i");
+          if (m[1] != null) { const i = document.createElement("i"); i.textContent = m[1]; e.append(i); }
+          else if (depth < 1) rich(e, m[2] ?? m[3] ?? m[4], depth + 1);
+          else e.textContent = m[2] ?? m[3] ?? m[4];
+          parent.append(e);
+          last = m.index + m[0].length;
+        }
+        parent.append(text.slice(last));
+      }
+
+      function render(obj, data) {
+        if (!obj || obj.v !== 1 || !Array.isArray(obj.a)) throw new Error("This link is damaged.");
+        const by = str(obj.by, 60) || "Someone";
+        const url = str(obj.u, 2000);
+        const web = /^https?:\/\//i.test(url);
+        const title = str(obj.t, 300) || url;
+        document.title = `${by}'s notes — ${title}`;
+        el("by").textContent = `${by}'s notes on`;
+        el("title").textContent = title;
+        if (web) el("title").href = url; // only ever a plain web address
+        const when = obj.at ? new Date(obj.at) : null;
+        el("meta").textContent = [web ? new URL(url).host : "a PDF", when && !isNaN(when) ? when.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : ""].filter(Boolean).join(" · ");
+        if (web) {
+          el("open").href = `${url}#wa-view=${data}`;
+          el("open").hidden = false;
+          el("hint").hidden = false;
+        }
+
+        const items = obj.a.slice(0, 500);
+        items.forEach((w, i) => {
+          if (!w || typeof w !== "object" || w.k === "r") return;
+          const card = document.createElement("div");
+          card.className = `note-card ${w.k === "h" ? (COLORS.has(w.c) ? w.c : "yellow") : "plain"}`;
+          if (Number.isInteger(w.g) && w.g > 0) {
+            const pg = document.createElement("div");
+            pg.className = "pg";
+            pg.textContent = `Page ${w.g}`;
+            card.append(pg);
+          }
+          const quote = document.createElement("div");
+          quote.className = "quote";
+          quote.textContent = w.k === "h" ? `“${str(w.x, 8000)}”` : w.k === "p" ? "★ Saved this page" : "✎ Drew on the page";
+          card.append(quote);
+          if (str(w.n, 8000)) {
+            const c = document.createElement("div");
+            c.className = "comment";
+            rich(c, str(w.n, 8000));
+            card.append(c);
+          }
+          for (const r of items) {
+            if (!r || r.k !== "r" || r.r !== i || !str(r.n, 8000)) continue;
+            const line = document.createElement("div");
+            line.className = "reply";
+            const who = document.createElement("b");
+            who.textContent = by;
+            const what = document.createElement("span");
+            rich(what, ` ${str(r.n, 8000)}`);
+            line.append(who, what);
+            card.append(line);
+          }
+          el("list").append(card);
+        });
+        el("content").hidden = false;
+      }
+
+      (async () => {
+        const data = (location.hash.match(/(?:^#|[#&]wa-view=)(v1\.[\w-]+)/) || [])[1];
+        try {
+          if (!data) throw new Error("This page shows notes shared with a Web Annotator view link — and this link doesn't carry any.");
+          render(await decode(data), data);
+        } catch (e) {
+          el("error").textContent = e.message || "Couldn't read this link.";
+          el("error").hidden = false;
+        }
+      })();
+    </script>
+  </body>
+</html>
