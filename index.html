@@ -87,7 +87,8 @@
       <h1 class="title"><a id="title" target="_blank" rel="noreferrer noopener"></a></h1>
       <div class="meta" id="meta"></div>
       <a class="open" id="open" target="_blank" rel="noreferrer noopener" hidden>Open the original with these notes →</a>
-      <div class="hint" id="hint" hidden>With the Web Annotator extension, the highlights appear on the original page itself.</div>
+      <div class="hint" id="hint" hidden>This link carries the notes only. With the Web Annotator extension, they appear on the original page itself.</div>
+      <div class="meta" id="orig" hidden><a id="origlink" target="_blank" rel="noreferrer noopener">Original page ↗</a><span id="withext"> · <a id="extlink" target="_blank" rel="noreferrer noopener">open it with these notes</a> (if you use Web Annotator)</span></div>
     </div>
     <div id="docwrap" hidden><article id="doc"></article><aside id="gutter"></aside></div>
     <div id="loose" hidden><h2>Notes on passages that aren't in this copy of the document</h2><div id="looselist"></div></div>
@@ -276,7 +277,7 @@
         el("gutter").style.height = wideEnough ? `${Math.max(bottom, 0) + 20}px` : "0";
       }
 
-      function header(obj, data) {
+      function header(obj, data, docMode) {
         const by = str(obj.by, 60) || "Someone";
         const url = str(obj.u, 2000);
         const isWeb = /^https?:\/\//i.test(url);
@@ -287,14 +288,20 @@
         if (isWeb) el("title").href = url; else el("title").removeAttribute("href");
         const when = obj.at ? new Date(obj.at) : null;
         el("meta").textContent = [isWeb ? new URL(url).host : "a PDF", when && !isNaN(when) ? `updated ${when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}` : ""].filter(Boolean).join(" · ");
-        el("open").hidden = el("hint").hidden = !isWeb;
-        if (isWeb) el("open").href = `${url}#wa-view=${data}`;
+        // With the document on this page, nobody needs the extension or the original:
+        // offer them as a quiet text link. Only a notes-only link gets the big button.
+        el("open").hidden = el("hint").hidden = !isWeb || docMode;
+        el("orig").hidden = !isWeb || !docMode;
+        if (isWeb) {
+          el("open").href = el("extlink").href = `${url}#wa-view=${data}`;
+          el("origlink").href = url;
+        }
         el("top").hidden = false;
         return by;
       }
 
       function renderList(obj, data) {
-        const by = header(obj, data);
+        const by = header(obj, data, false);
         el("docwrap").hidden = el("loose").hidden = true;
         el("list").replaceChildren();
         const items = obj.a.slice(0, 500);
@@ -312,7 +319,7 @@
       }
 
       function renderDoc(obj, doc, data) {
-        const by = header(obj, data);
+        const by = header(obj, data, true);
         el("list").replaceChildren();
         el("doc").replaceChildren();
         el("gutter").replaceChildren();
