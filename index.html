@@ -115,6 +115,7 @@
     <script>
       "use strict";
       const GIST_API = "https://api.github.com/gists/";
+      const GIST_RAW = "https://gist.githubusercontent.com/"; // <user>/<id>/raw/<file> = latest, CORS, no API quota
       const el = (id) => document.getElementById(id);
       const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
       const COLORS = new Set(["yellow", "green", "blue", "pink", "orange"]);
@@ -148,20 +149,35 @@
         if (typeof text !== "string" || text.length > max) throw new Error("These shared notes are too large to show.");
         return text;
       }
-      async function loadGist(id) {
-        const res = await fetch(GIST_API + id, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
-        if (res.status === 404) throw new Error("These notes were taken down by the person who shared them (or the link is incomplete).");
-        if (res.status === 403 || res.status === 429) throw new Error("GitHub is limiting requests from this network right now — try again in a few minutes.");
+      // Raw gist urls: no per-network API quota (the API allows only 60 anonymous
+      // requests an hour — an office full of readers would hit it), ~5 min cache.
+      let owner = new URLSearchParams(location.search).get("u");
+      const docCache = {}; // the document never changes on a notes update; fetch it once
+      async function rawFile(id, name, max) {
+        const res = await fetch(`${GIST_RAW}${encodeURIComponent(owner)}/${id}/raw/${name}`, { cache: "no-store" });
+        if (res.status === 404) return null;
         if (!res.ok) throw new Error(`Couldn't load these notes (GitHub said ${res.status}).`);
-        const g = await res.json();
-        const notes = await gistFile(g.files && g.files["notes.json"], 2000000);
-        if (!notes) throw new Error("This link doesn't point at shared notes.");
-        return {
-          obj: JSON.parse(notes),
-          doc: await gistFile(g.files["doc.html"], 3000000),
-          pdf: await gistFile(g.files["doc.pdf.b64"], 30000000),
-          stamp: g.updated_at,
-        };
+        const text = await res.text();
+        if (text.length > max) throw new Error("These shared notes are too large to show.");
+        return text;
+      }
+      async function loadGist(id) {
+        if (!owner || !/^[\w.-]{1,60}$/.test(owner)) {
+          // Old link without the owner: one API call to learn it, then raw from here on.
+          const res = await fetch(GIST_API + id, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
+          if (res.status === 404) throw new Error("These notes were taken down by the person who shared them (or the link is incomplete).");
+          if (res.status === 403 || res.status === 429) throw new Error("GitHub is limiting requests from this network right now — try again in a few minutes.");
+          if (!res.ok) throw new Error(`Couldn't load these notes (GitHub said ${res.status}).`);
+          owner = (await res.json()).owner?.login;
+          if (!owner) throw new Error("This link doesn't point at shared notes.");
+        }
+        const notes = await rawFile(id, "notes.json", 2000000);
+        if (notes === null) throw new Error("These notes were taken down by the person who shared them (or the link is incomplete).");
+        if (!(id in docCache)) {
+          const pdf = await rawFile(id, "doc.pdf.b64", 30000000);
+          docCache[id] = { pdf, doc: pdf ? null : await rawFile(id, "doc.html", 3000000) };
+        }
+        return { obj: JSON.parse(notes), ...docCache[id], stamp: notes };
       }
 
       // -------------------------------------------------------------- rich text
@@ -453,7 +469,7 @@
       let last = null; // { stamp } of what's on screen, for live links
       async function showGist(id, quiet) {
         const got = await loadGist(id);
-        if (last && last.stamp === got.stamp) return;
+        if (last && last.stamp === got.stamp) return; // same notes.json text → nothing to redraw
         const y = scrollY;
         last = { stamp: got.stamp };
         const o = got.obj;
@@ -471,14 +487,15 @@
           if (gist && /^[0-9a-f]{16,64}$/i.test(gist)) {
             await showGist(gist, false);
             el("foot").textContent = "Live link — this page checks for new notes by itself. The notes and this copy of the document are kept in a private, unlisted GitHub gist by the person who shared them.";
-            // Live: look again every 2 minutes while visible, and whenever the tab regains focus.
+            // Live: look again every 5 minutes while visible, and whenever the tab
+            // regains focus (raw urls are cached ~5 min upstream anyway).
             let lastCheck = Date.now();
             const again = () => {
-              if (document.hidden || Date.now() - lastCheck < 30000) return;
+              if (document.hidden || Date.now() - lastCheck < 60000) return;
               lastCheck = Date.now();
               showGist(gist, true).catch(() => {});
             };
-            setInterval(again, 120000);
+            setInterval(again, 300000);
             addEventListener("focus", again);
             document.addEventListener("visibilitychange", again);
             window.__refresh = () => showGist(gist, true); // for tests / the impatient
