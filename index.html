@@ -35,6 +35,7 @@
       h1.title { font-size: 26px; line-height: 1.25; margin: 4px 0 6px; }
       h1.title a { color: inherit; text-decoration: none; } h1.title a:hover { text-decoration: underline; }
       .meta { color: var(--sub); font-size: 13px; margin-bottom: 14px; word-break: break-word; }
+      .open[hidden], .hint[hidden], .meta[hidden] { display: none; }
       .open { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600; font-size:14px; padding:8px 14px; border-radius:9px; }
       .hint { color: var(--sub); font-size: 12.5px; margin: 8px 0 0; }
 
@@ -69,6 +70,21 @@
       .reply > b { color: var(--accent); }
       #loose { max-width: 1080px; margin: 22px auto 0; padding: 0 20px; }
       #loose h2 { font-size: 14px; color: var(--sub); font-weight: 600; }
+
+      /* ---- PDF mode: real pages, rendered with pdf.js ---- */
+      #doc.pdf { background: transparent; border: 0; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+      .page { position: relative; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, .25); }
+      .page canvas { display: block; width: 100%; height: 100%; }
+      .textLayer { position: absolute; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-align: initial;
+        text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 0; mix-blend-mode: multiply; }
+      .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+      .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { z-index: 1; }
+      .textLayer span.markedContent { top: 0; height: 0; }
+      .textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 75%); }
+      .textLayer mark.hl { position: static; color: transparent; padding: 0; border-radius: 1px; }
+      .textLayer mark.hl.yellow { background: #ffe066; } .textLayer mark.hl.green { background: #a0e8a0; }
+      .textLayer mark.hl.blue { background: #9ad0ff; } .textLayer mark.hl.pink { background: #ffb3d1; } .textLayer mark.hl.orange { background: #ffc078; }
+      .pagenum { position: absolute; right: 0; bottom: -18px; font: 11px -apple-system, sans-serif; color: var(--sub); }
 
       /* ---- list mode (frozen links, or a live link with no document copy) ---- */
       #list { max-width: 680px; margin: 22px auto 0; padding: 0 20px; }
@@ -140,7 +156,12 @@
         const g = await res.json();
         const notes = await gistFile(g.files && g.files["notes.json"], 2000000);
         if (!notes) throw new Error("This link doesn't point at shared notes.");
-        return { obj: JSON.parse(notes), doc: await gistFile(g.files["doc.html"], 3000000), stamp: g.updated_at };
+        return {
+          obj: JSON.parse(notes),
+          doc: await gistFile(g.files["doc.html"], 3000000),
+          pdf: await gistFile(g.files["doc.pdf.b64"], 30000000),
+          stamp: g.updated_at,
+        };
       }
 
       // -------------------------------------------------------------- rich text
@@ -269,8 +290,8 @@
             bottom = y + card.offsetHeight;
           } else {
             card.style.top = "";
-            let block = mark.parentElement;
-            while (block.parentElement && block.parentElement !== el("doc") && getComputedStyle(block).display.startsWith("inline")) block = block.parentElement;
+            let block = mark.closest(".page") || mark.parentElement;
+            while (!block.classList.contains("page") && block.parentElement && block.parentElement !== el("doc") && getComputedStyle(block).display.startsWith("inline")) block = block.parentElement;
             if (card.previousSibling !== block) block.after(card);
           }
         }
@@ -318,13 +339,73 @@
         });
       }
 
-      function renderDoc(obj, doc, data) {
+      // ---- PDF: render the real pages (canvas + pdf.js text layer to anchor in) ----
+      const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/";
+      let pdfjs = null;
+      async function buildPdf(b64) {
+        pdfjs = pdfjs || (await import(PDFJS + "build/pdf.min.mjs"));
+        pdfjs.GlobalWorkerOptions.workerSrc = PDFJS + "build/pdf.worker.min.mjs";
+        const bin = atob(b64.replace(/\s+/g, ""));
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        const pdf = await pdfjs.getDocument({ data: bytes, cMapUrl: PDFJS + "cmaps/", cMapPacked: true, standardFontDataUrl: PDFJS + "standard_fonts/", isEvalSupported: false }).promise;
+        const host = el("doc");
+        host.className = "pdf";
+        const first = await pdf.getPage(1);
+        const base = first.getViewport({ scale: 1 });
+        const avail = Math.min(innerWidth - 40 - (innerWidth >= 1040 ? 320 : 0), 820);
+        const scale = Math.min(2, Math.max(0.5, avail / base.width));
+        const pages = [];
+        for (let n = 1; n <= pdf.numPages; n++) {
+          const page = await pdf.getPage(n);
+          const vp = page.getViewport({ scale });
+          const div = document.createElement("div");
+          div.className = "page";
+          div.style.width = `${Math.floor(vp.width)}px`;
+          div.style.height = `${Math.floor(vp.height)}px`;
+          div.style.setProperty("--scale-factor", scale);
+          const layer = document.createElement("div");
+          layer.className = "textLayer";
+          await new pdfjs.TextLayer({ textContentSource: await page.getTextContent(), container: layer, viewport: vp }).render();
+          const num = document.createElement("div");
+          num.className = "pagenum";
+          num.textContent = n;
+          div.append(layer, num);
+          host.append(div);
+          pages.push({ div, page, vp, canvas: null, busy: false });
+        }
+        // Pixels are drawn lazily, near the viewport; text (what highlights sit in) is all there already.
+        const paint = async (p) => {
+          if (p.canvas || p.busy) return;
+          p.busy = true;
+          const dpr = devicePixelRatio || 1;
+          const c = document.createElement("canvas");
+          c.width = Math.floor(p.vp.width * dpr);
+          c.height = Math.floor(p.vp.height * dpr);
+          await p.page.render({ canvasContext: c.getContext("2d"), viewport: p.vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
+          p.div.prepend(c);
+          p.canvas = c;
+          p.busy = false;
+        };
+        const visible = () => {
+          for (const p of pages) {
+            const r = p.div.getBoundingClientRect();
+            if (r.bottom > -1500 && r.top < innerHeight + 1500) paint(p);
+          }
+        };
+        let tick = false;
+        addEventListener("scroll", () => { if (tick) return; tick = true; requestAnimationFrame(() => { tick = false; visible(); }); }, { passive: true });
+        visible();
+      }
+
+      async function renderDoc(obj, doc, data, pdfB64) {
         const by = header(obj, data, true);
         el("list").replaceChildren();
         el("doc").replaceChildren();
+        el("doc").className = "";
         el("gutter").replaceChildren();
         el("looselist").replaceChildren();
-        cleanInto(el("doc"), doc);
+        if (pdfB64) await buildPdf(pdfB64);
+        else cleanInto(el("doc"), doc);
         let settle;
         el("doc").querySelectorAll("img").forEach((img) =>
           img.addEventListener("load", () => { clearTimeout(settle); settle = setTimeout(() => cards.length && layout(), 120); })
@@ -379,7 +460,7 @@
         if (!o || o.v !== 1 || !Array.isArray(o.a)) throw new Error("This link is damaged.");
         const data = await deflate({ ...o, doc: undefined });
         document.querySelectorAll("#docwrap > .pagecard").forEach((c) => c.remove());
-        if (got.doc) renderDoc(o, got.doc, data); else renderList(o, data);
+        if (got.pdf || got.doc) await renderDoc(o, got.doc, data, got.pdf); else renderList(o, data);
         if (quiet) scrollTo(0, y);
       }
 
