@@ -104,7 +104,7 @@
       <div class="meta" id="meta"></div>
       <a class="open" id="open" target="_blank" rel="noreferrer noopener" hidden>Open the original with these notes →</a>
       <div class="hint" id="hint" hidden>This link carries the notes only. With the Web Annotator extension, they appear on the original page itself.</div>
-      <div class="meta" id="orig" hidden><a id="origlink" target="_blank" rel="noreferrer noopener">Original page ↗</a><span id="withext"> · <a id="extlink" target="_blank" rel="noreferrer noopener">open it with these notes</a> (if you use Web Annotator)</span></div>
+      <div class="meta" id="orig" hidden><a id="origlink" target="_blank" rel="noreferrer noopener">Original page ↗</a></div>
     </div>
     <div id="docwrap" hidden><article id="doc"></article><aside id="gutter"></aside></div>
     <div id="loose" hidden><h2>Notes on passages that aren't in this copy of the document</h2><div id="looselist"></div></div>
@@ -330,7 +330,7 @@
         el("open").hidden = el("hint").hidden = !isWeb || docMode;
         el("orig").hidden = !isWeb || !docMode;
         if (isWeb) {
-          el("open").href = el("extlink").href = `${url}#wa-view=${data}`;
+          el("open").href = `${url}#wa-view=${data}`;
           el("origlink").href = url;
         }
         el("top").hidden = false;
